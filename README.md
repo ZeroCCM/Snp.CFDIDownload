@@ -24,3 +24,10 @@ dotnet test Snp.CFDIDownload.sln
 ```
 
 These commands require the appropriate tooling installed on your machine.
+
+## Using your FIEL
+
+`CFDIDownloadService` expects the path to your `.cer` and `.key` files plus the
+password protecting the private key. The service combines both files into a
+temporary PFX certificate and signs the authentication request. Ensure the files
+are valid and correspond to the same certificate issued by SAT.

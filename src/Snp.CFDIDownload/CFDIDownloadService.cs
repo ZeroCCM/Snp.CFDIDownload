@@ -1,10 +1,14 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using Org.BouncyCastle.Pkcs;
+using Org.BouncyCastle.Security;
+using Org.BouncyCastle.X509;
 
 namespace Snp.CFDIDownload
 {
@@ -34,7 +38,7 @@ namespace Snp.CFDIDownload
             if (!File.Exists(privateKeyPath))
                 throw new FileNotFoundException("Private key file not found", privateKeyPath);
 
-            var cert = new X509Certificate2(certificatePath, privateKeyPassword, X509KeyStorageFlags.MachineKeySet);
+            var cert = LoadFielCertificate(certificatePath, privateKeyPath, privateKeyPassword);
             var soap = BuildAuthEnvelope(cert, rfc);
             var content = new StringContent(soap, Encoding.UTF8, "text/xml");
             using var response = await _httpClient.PostAsync(AuthUrl, content).ConfigureAwait(false);
@@ -61,11 +65,18 @@ namespace Snp.CFDIDownload
 
         private static string BuildAuthEnvelope(X509Certificate2 cert, string rfc)
         {
+            var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss");
+            var cadena = $"||{rfc}|{now}||";
+            using var rsa = cert.GetRSAPrivateKey();
+            var sello = Convert.ToBase64String(rsa.SignData(Encoding.UTF8.GetBytes(cadena), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+
             var encodedCert = Convert.ToBase64String(cert.RawData);
             var envelope = new XDocument(
                 new XElement("Autenticacion",
                     new XElement("rfc", rfc),
-                    new XElement("certificado", encodedCert))
+                    new XElement("fecha", now),
+                    new XElement("certificado", encodedCert),
+                    new XElement("sello", sello))
             );
             return envelope.ToString();
         }
@@ -89,6 +100,25 @@ namespace Snp.CFDIDownload
                     new XElement("fechaFinal", end))
             );
             return envelope.ToString();
+        }
+
+        internal static X509Certificate2 LoadFielCertificate(string certificatePath, string keyPath, string password)
+        {
+            var certParser = new X509CertificateParser();
+            var bcCert = certParser.ReadCertificate(File.ReadAllBytes(certificatePath));
+
+            var encInfo = new Pkcs8EncryptedPrivateKeyInfo(File.ReadAllBytes(keyPath));
+            var keyInfo = encInfo.DecryptPrivateKeyInfo(password.ToCharArray());
+            var key = PrivateKeyFactory.CreateKey(keyInfo);
+
+            var store = new Pkcs12Store();
+            var entry = new X509CertificateEntry(bcCert);
+            store.SetCertificateEntry("cert", entry);
+            store.SetKeyEntry("key", new AsymmetricKeyEntry(key), new[] { entry });
+
+            using var ms = new MemoryStream();
+            store.Save(ms, password.ToCharArray(), new SecureRandom());
+            return new X509Certificate2(ms.ToArray(), password, X509KeyStorageFlags.MachineKeySet);
         }
     }
 }
